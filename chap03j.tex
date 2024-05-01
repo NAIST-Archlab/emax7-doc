@@ -1,0 +1,457 @@
+
+\chapter{Examples}
+
+\section{Image recognition (tsim)}
+
+MNIST
+
+\shabox{
+\leftline{cent\% make -f Makefile-cent.emax7nc all clean}
+\leftline{cent\% cd ../; tsim/tsim-cent.emax7nc -x -t -I0 -C1 -F1}
+}
+
+\shabox{
+\leftline{acap\% make -f Makefile-acap.emax7+dma all clean}
+\leftline{acap\% cd ../; tsim/tsim-acap.emax7+dma -x -t -I0 -C1 -F1}
+}
+
+\vskip .1in
+
+CIFAR10
+
+\shabox{
+\leftline{cent\% make -f Makefile-cent.emax7nc all clean}
+\leftline{cent\% cd ../; tsim/tsim-cent.emax7nc -x -t -I1 -C6 -F2}
+}
+
+\shabox{
+\leftline{acap\% make -f Makefile-acap.emax7+dma all clean}
+\leftline{acap\% cd ../; tsim/tsim-acap.emax7+dma -x -t -I1 -C6 -F2}
+}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{ssim.eps}
+\caption{Image recognition (training + inference)}
+\end{figure}
+
+\clearpage
+
+\subsection{Header}
+
+IMAX3は，複数のIMAX2レーンを制御するために，ARMのマルチスレッディングを利用
+する．NTHREADは，複数IMAX2レーンの起動に際し，ARMにおいて起動しておくスレッ
+ド数である．EMAX\_LANEは，同時に起動するIMAX2レーンを制御するための，制御変
+数セットの上限である．また，NLANEは，実機において検出されたIMAX2のレーン数で
+ある．EMAX\_LANEを超えて，実機において検出されたIMAX2は，利用されない．すな
+わち，NLANEにセットされる値は，必ず，EMAX\_LANE以下である．なお，NTHREADは，
+NLANE以上でなければならない．
+
+\begin{screen}
+\scriptsize
+\begin{verbatim}
+#define MAX_NTHREAD 16
+volatile struct th_inference_args {
+  int      thid;
+  int      stat;     /* 0:idle, 1:run, 2:wait (enq/deq, DMA, EXEC) */
+  sigset_t sigset;   /* sys/_sigset.h 2B/4B */
+  int      deq;
+  int      enq;
+  float4D *slice;
+  CNNet   *net;
+  int      batch_size;
+  int      nchan;
+  int      insize;
+} th_inference_args[MAX_NTHREAD];
+volatile int th_inference_retv[MAX_NTHREAD];
+pthread_t    th_inference_t[MAX_NTHREAD];
+void         th_inference(struct th_inference_args *);
+\end{verbatim}
+\end{screen}
+
+\subsection{IMAX3 thread driver}
+
+複数のIMAX2を起動して，マクロパイプラインを構成する際には，IMAX2カーネルを含
+む関数ラッパー（以下の例ではth\_inference）を用意し，ARMのpthread\_createを用
+いて，NTHREAD個のスレッドを起動する．スレッドの引数は，thread番号，パイプラ
+イン同期用のenq/deqを含む．
+
+\begin{screen}
+\scriptsize
+\begin{verbatim}
+  int THREAD;
+  for (THREAD=0; THREAD<NTHREAD; THREAD++) {
+    th_inference_args[THREAD].thid       = THREAD;
+    th_inference_args[THREAD].stat       = 1; /* run */
+    sigemptyset(&th_inference_args[THREAD].sigset);
+    sigaddset(&th_inference_args[THREAD].sigset, SIGUSR1);
+    pthread_sigmask(SIG_BLOCK, &th_inference_args[THREAD].sigset, NULL);
+    th_inference_args[THREAD].enq        = 0;
+    th_inference_args[THREAD].deq        = 0;
+    th_inference_args[THREAD].slice      = &slice;
+    th_inference_args[THREAD].net        = net;
+    th_inference_args[THREAD].batch_size = batch_size;
+    th_inference_args[THREAD].nchan      = nchan;
+    th_inference_args[THREAD].insize     = insize;
+  }
+  if (NTHREAD > 1) {
+    for (THREAD=0; THREAD<NTHREAD; THREAD++)
+      pthread_create(&th_inference_t[THREAD], NULL, (void*)th_inference, &th_inference_args[THREAD]); /* 0-(NTHREAD-1) */
+    while (1) {
+      int cont = 0;
+      usleep(4000); /* 4msec 2024/01/24 Nakashima */
+      for (THREAD=0; THREAD<NTHREAD; THREAD++) {
+        switch (th_inference_args[THREAD].stat) {
+        case 0:            break;/* idle */
+        case 1:  cont = 1; break;/* run */
+        default: cont = 1; pthread_kill(th_inference_t[THREAD], SIGUSR1); break; /* wait */
+        }
+      }
+      if (!cont) break;
+    }
+    for (THREAD=0; THREAD<NTHREAD; THREAD++)
+      pthread_join(th_inference_t[THREAD], NULL);
+  }
+  else {
+    for (THREAD=0; THREAD<NTHREAD; THREAD++)
+      th_inference(&th_inference_args[THREAD]);
+  }
+\end{verbatim}
+\end{screen}
+
+\clearpage
+
+\subsection{IMAX3 thread wrapper}
+
+ラッパーは，複数同時に起動される．内部で複数スレッドがパイプライン動作するよ
+う，引数で与えられるスレッド番号に基づき，担当箇所を実行するよう記述する．
+
+\begin{screen}
+\scriptsize
+\begin{verbatim}
+/* IMAX3 MACROPIPELIING for EVALUATION */
+void th_inference(struct th_inference_args *args)
+{
+  int THREAD     = args->thid;
+  float4D *slice = args->slice;
+  CNNet *net     = args->net;
+  int batch_size = args->batch_size;
+  int nchan      = args->nchan;
+  int insize     = args->insize;
+  int j, k;
+  /************************************/
+  /* TARGET of MACRO-PIPELINING/IMAX3 */
+  /************************************/
+  slice->nstrides = batch_size;
+  slice->nchannel = xtest.nchannel;
+  slice->kstrides = xtest.kstrides;
+  slice->stride_size = xtest.stride_size;
+  for (j=0; j+batch_size<=xtest.nstrides; j+=batch_size) {
+    if (THREAD == 0) {
+      slice->data = &(xtest.data[j*xtest.stride_size*xtest.kstrides*xtest.nchannel]);
+      if (cnn_mode) {
+        if (enable_x11) {
+          F4i2Ipl(batch_size, nchan, insize, insize, I, slice); /* 100batch x 28x28 x 1chan */
+          copy_I_to_BGR(D, batch_size, insize, insize, I);
+          BGR_to_X(0, D);
+        }
+        // copy data to input layer
+        copy4D(&(net->ninput), slice);
+        if (attn_mode) {
+          attention(&(net->ninput), &(net->work), &(net->attention)); /* batch,RGB,H,W */
+          if (enable_x11) {
+            F4i2Ipl(batch_size, nchan, insize, insize, I, &(net->work)); /* 100batch x 28x28 x 1chan */
+            copy_I_to_BGR(D, batch_size, insize, insize, I);
+            BGR_to_X(3, D);
+            F4i2Ipl(batch_size, nchan, insize, insize, I, &(net->ninput)); /* 100batch x 28x28 x 1chan */
+            copy_I_to_BGR(D, batch_size, insize, insize, I);
+            BGR_to_X(1, D);
+          }
+        }
+      }
+      if (eye_mode) {
+        F4i2Ipl(batch_size, nchan, insize, insize, I, slice); /* 100batch x 28x28 x 1chan */
+        copy_I_to_BGR(R, batch_size, insize, insize, I); /* R <- I */
+        copy_I_to_BGR(L, batch_size, insize, insize, I); /* L <- I */
+        if (enable_x11)
+          BGR_to_X(0, R);
+        /* pre-processing by eye-model */
+        eyemodel(enable_x11, slit_type); /* L+R -> Sl+Sr */
+        /* import Sr to hidden_layer */
+        Ipl2F4h(10, WD, HT, Sr, Cr, R, &net->nhidden[0]); /* 100batch x 24x24 x 9chan -> hidden */
+      }
+    }
+    nn_forward(/*MACROPIPE*/1, THREAD, net, c[input_type], f[input_type], &pred, spike_mode);
+    if ((NTHREAD==1 || eye_mode)
+      ||(CNN_DEPTH==1 && THREAD==2)
+      ||(CNN_DEPTH==3 && THREAD==6)
+      ||(CNN_DEPTH==4 && THREAD==8)
+      ||(CNN_DEPTH==6 && THREAD==12)) {
+
+      for (k=0;k<batch_size;k++) {
+        float *A = &(pred.data[k*pred.stride_size]);
+        nerr += (MaxIndex(A, pred.stride_size) != ytest[j+k]);
+      }
+      if (enable_x11) {
+        clear_BGR(D);
+        copy_H_to_BGR(D+WD*(HT*1/4), &net->nhidden[0]);
+        copy_H_to_BGR(D+WD*(HT*2/4), &net->nhidden[CNN_DEPTH-1]);
+        BGR_to_X(2, D);
+        while (x11_checkevent());
+      }
+    }
+  }
+  /*********************************/
+  /* END of MACRO-PIPELINING/IMAX3 */
+  /*********************************/
+  args->stat = 0; /* idle */
+}
+\end{verbatim}
+\end{screen}
+
+\clearpage
+
+\subsection{IMAX3 region}
+
+以下のnn\_forwardは，インファレンスを行う最上位関数である．現在は，手作業に
+より，引数THREADと，使用するIMAX2レーン番号を関連付けている．また，enq/deqを
+用いて，マクロパイプラインを同期している．将来，自動化ツールが完成すれば，手
+作業は不要となる．
+
+\begin{screen}
+\scriptsize
+\begin{verbatim}
+void nn_forward(int MACROPIPE, int THREAD, CNNet *net, struct c *c, struct f *f, float2D *oubatch, int spike_mode)
+{ /* NTHREAD 1:MACRO_PIPE_OFF 2-:MACRO_PIPE_ON */
+  /*                             EMAX7:NTHREAD=8 other:NTHREAD=1 */
+  /*                              ZYNQ:NLANE=X                   */
+  /*                              othr:NLANE=4                   */
+  /* train:     nn_forward(0, 1)                                 */
+  /* inference: nn_forward(1, T)                                 */
+  /* camera:    nn_forward(0, 1)                                 */
+  /* th#>0の場合,前段enq==deqなら待機 最終th#未満の場合,自段enq!=deqなら待機 */
+  /* 待機状態になければ,前段deq=1-deqに更新                                  */
+  /* 自段enqで自身のdbuf選択                                                 */
+  /* 最後に,            自段enq=1-enqに更新                                  */
+  /* DBUFの場合                                                              */
+  /* th#0      ****0* ****1* ****2*  CNN0:ninput->nhidden[0]                 */
+  /*      enq 0     11     00     11                                         */
+  /*      deq 0     01     10     01                                         */
+  /* th#1     -------*0*    *1*    *2*  nhidden[0]->npool[0]                 */
+  /*      enq 0        11     00     11                                      */
+  /*      deq 0        01     10     01                                      */
+  /* th#2     ----------****0* ****1* ****2*  CNN1:npool[0]->nhidden[1]      */
+  /*      enq 0              11     00     11                                */
+  /*      deq 0              01     10     01                                */
+  /* th#3     ----------------*0*    *1*    *2*  nhidden[1]->npool[1]        */
+
+  /* NHIDDEN/NPOOLをDBUFとして使う場合                                       */
+  /* th#0      ****0*  ****1*  ****2*  CNN0:ninput->nhidden[0]               */
+  /*      enq 0     1 1     0 0     1 1                                      */
+  /*      deq 0     0 1     1 0     0 1                                      */
+  /* th#1     ------*0*     *1*     *2*  nhidden[0]->npool[0]                */
+  /*      enq 0       1     1 0     0 1                                      */
+  /*      deq 0       0     1 1     0 0     1                                */
+  /* th#2     ---------****0*  ****1*  ****2*  CNN1:npool[0]->nhidden[1]     */
+  /*      enq 0             1 1     0 0     1 1                              */
+  /*      deq 0             0 1     1 0     0 1                              */
+  /* th#3     --------------*0*     *1*     *2*  nhidden[1]->npool[1]        */
+
+  int batch_size = net->ninput.nstrides;
+  int i, j, k, l;
+  float *temp;
+
+  if (cnn_mode && !(CNN_DEPTH==1 && FC_DEPTH==1) && !(CNN_DEPTH==3 && FC_DEPTH==1)
+               && !(CNN_DEPTH==4 && FC_DEPTH==1) && !(CNN_DEPTH==6 && FC_DEPTH==2)) { /* IGNORE MACRO_PIPE in cnn_mode */
+    if (THREAD > 0) exit(0);
+  }
+  if (eye_mode) { /* IGNORE MACRO_PIPE in eye_mode */
+    if (THREAD > 0) exit(0);
+  }
+  if (spike_mode) { /* IGNORE MACRO_PIPE in spike_mode */
+    if (THREAD > 0) exit(0);
+  }
+  if (spike_mode) {
+    /* SMAX1 assumes -V* -C1 */
+    // add bias broadcast<2>(hbias, hidden.shape);
+    temp = net->nhidden[0].data;
+    for (i=0;i<net->nhidden[0].nstrides;i++) {
+      for (j=0;j<net->nhidden[0].nchannel;j++) {
+        for (k=0;k<net->nhidden[0].kstrides*net->nhidden[0].stride_size;k++,temp++)
+          *temp += net->hbias[0].data[j];
+      }
+    }
+    relu4(&(net->nhidden[0]));                                                 /* V1->c.nhidden[0].data */
+    max_pooling(&(net->npool[0]), &(net->nhidden[0]), c[0].psize, c[0].psize); /*   ->c.npool[0].data */
+    flat4Dto2D(&(net->nflat[0]), &(net->npool[0]));                            /*   ->f.nflat[0].data */
+    smax_trial(0, net, c, f); /* IGNORE MACRO_PIPE */
+  }
+\end{verbatim}
+\end{screen}
+
+\begin{screen}
+\scriptsize
+\begin{verbatim}
+  else {
+    int LANE = 0;
+    for (l=0; l<CNN_DEPTH; l++) {
+      /***************************************************************************/
+      if (!MACROPIPE || NTHREAD==1 || eye_mode) {}
+      else if (THREAD == l*2) {
+        if (THREAD>0) while (th_inference_args[THREAD-1].enq==th_inference_args[THREAD-1].deq) { inference_sigwait; }
+                      while (th_inference_args[THREAD  ].enq!=th_inference_args[THREAD  ].deq) { inference_sigwait; }
+        //th_inference_args[THREAD-1].deq = 1-th_inference_args[THREAD-1].deq; /* DBUFの場合 */
+#if defined(EMAX7)
+        if (l >= NLANE) {
+          printf("nn_forward_CNN: LANE(%d) >= NLANE(%d)\n", l, NLANE);
+          exit(1);
+        }
+        LANE = l;
+        emax7[LANE].sigwait = 1; /* ON */
+        emax7[LANE].sigstat = &th_inference_args[THREAD].stat;
+        emax7[LANE].sigset  = &th_inference_args[THREAD].sigset;
+#endif
+      }
+      else
+        goto end_of_cnn; /* skip other task */
+      /***************************************************************************/
+      if (l>0 || cnn_mode) {
+        // first layer, conv, use stride=2
+        /***********************ninput*** V CNN    */
+#ifndef CUDA
+/*★IMAX3★*/conv_forward(THREAD, LANE, l==0?&(net->ninput):&(net->npool[l-1]), &(net->Ki2h[l]),
+                          &(net->nhidden[l]), c[l].ksize, &(net->tmp_col[l]), &(net->tmp_dst[l]));
+#else
+        conv_forward_cuda(l==0?&(net->ninput):&(net->npool[l-1]), &(net->Ki2h[l]),
+                          &(net->nhidden[l]), c[l].ksize, &(net->tmp_col[l]), &(net->tmp_dst[l]));
+#endif
+      }
+
+      // add bias broadcast<2>(hbias, hidden.shape);
+      temp = net->nhidden[l].data;
+      for (i=0;i<net->nhidden[l].nstrides;i++) {
+        for (j=0;j<net->nhidden[l].nchannel;j++) {
+          for (k=0;k<net->nhidden[l].kstrides*net->nhidden[l].stride_size;k++,temp++)
+            *temp += net->hbias[l].data[j];
+        }
+      }
+      // Activation, relu, backup activation in nhidden
+      // nhidden = F<relu>(nhidden);
+      relu4(&(net->nhidden[l]));
+      copy4D(&(net->nhiddenbak[l]), &(net->nhidden[l]));
+
+      /***************************************************************************/
+      if (!MACROPIPE || NTHREAD==1 || eye_mode) {
+      }
+      else if (THREAD == l*2) {
+        if (THREAD>0) th_inference_args[THREAD-1].deq = 1-th_inference_args[THREAD-1].deq;
+                      th_inference_args[THREAD  ].enq = 1-th_inference_args[THREAD  ].enq;
+      }
+      /***************************************************************************/
+    end_of_cnn:
+\end{verbatim}
+\end{screen}
+
+\begin{screen}
+\scriptsize
+\begin{verbatim}
+      /***************************************************************************/
+      if (!MACROPIPE || NTHREAD==1 || eye_mode) {
+      }
+      else if (THREAD == l*2+1) {
+        while (th_inference_args[THREAD-1].enq==th_inference_args[THREAD-1].deq) { inference_sigwait; }
+        while (th_inference_args[THREAD  ].enq!=th_inference_args[THREAD  ].deq) { inference_sigwait; }
+        //th_inference_args[THREAD-1].deq = 1-th_inference_args[THREAD-1].deq; /* DBUFの場合 */
+      }
+      else
+        goto end_of_maxpool; /* skip other task */
+      /***************************************************************************/
+
+      // max pooling /*後段nhiddenが空いたら開始*/
+      max_pooling(&(net->npool[l]), &(net->nhidden[l]), c[l].psize, c[l].psize);
+      copy4D(&(net->npoolbak[l]), &(net->npool[l]));
+
+      /***************************************************************************/
+      if (!MACROPIPE || NTHREAD==1 || eye_mode) {
+      }
+      else if (THREAD == l*2+1) {
+        th_inference_args[THREAD-1].deq = 1-th_inference_args[THREAD-1].deq; /* NHIDDEN/NPOOLを使ったDBUFの場合 */
+        th_inference_args[THREAD  ].enq = 1-th_inference_args[THREAD  ].enq;
+      }
+      /***************************************************************************/
+    end_of_maxpool:
+      continue;
+    }
+\end{verbatim}
+\end{screen}
+
+\begin{screen}
+\scriptsize
+\begin{verbatim}
+    /***************************************************************************/
+    if (!MACROPIPE || NTHREAD==1 || eye_mode)
+      LANE = 0;
+    else if (THREAD == CNN_DEPTH*2) {
+      while (th_inference_args[THREAD-1].enq==th_inference_args[THREAD-1].deq) { inference_sigwait; }
+      //th_inference_args[THREAD-1].deq = 1-th_inference_args[THREAD-1].deq; /* DBUFの場合 */
+#if defined(EMAX7)
+      if (CNN_DEPTH >= NLANE) {
+        printf("nn_forward_FC: CNN_DEPTH(%d) >= NLANE(%d)\n", CNN_DEPTH, NLANE);
+        exit(1);
+      }
+      LANE = CNN_DEPTH;
+      emax7[LANE].sigwait = 1; /* ON */
+      emax7[LANE].sigstat = &th_inference_args[THREAD].stat;
+      emax7[LANE].sigset  = &th_inference_args[THREAD].sigset;
+#endif
+    }
+    else
+      goto end_of_fc; /* skip other task */
+    /***************************************************************************/
+    for (l=0; l<FC_DEPTH; l++) {
+      if (l==0)                                                  /***********************npool**** A CNN    */
+        flat4Dto2D(&(net->nflat[0]), &(net->npool[CNN_DEPTH-1]));/*************************|****** BOUNDARY */
+      else                                                       /***********************nflat**** V FC     */
+        copy2D(&(net->nflat[l]), &(net->nout[l-1]));
+
+      // second layer full-connection
+/*★IMAX3★*/multiply_float2D(THREAD, LANE, &(net->nout[l]), &(net->nflat[l]), 0, &(net->Wh2o[l]), 0);
+      repmat_add(&(net->nout[l]), &(net->obias[l]), batch_size);
+
+      if (l < FC_DEPTH-1) {
+        // activation, sigmloid, backup activation in fhidden
+#if 1
+        sigmoid(&(net->nout[l]));
+#else
+        relu2(&(net->nout[l]));
+#endif
+        copy2D(&(net->noutbak[l]), &(net->nout[l]));
+      }
+      else { /* l == FC_DEPTH-1 */
+        // softmax calculation
+        softmax2D(&(net->nout[FC_DEPTH-1]), &(net->nout[FC_DEPTH-1]));
+      }
+    }
+    /***************************************************************************/
+    if (!MACROPIPE || NTHREAD==1 || eye_mode)   {
+    }
+    else if (THREAD == CNN_DEPTH*2)
+      th_inference_args[THREAD-1].deq = 1-th_inference_args[THREAD-1].deq; /* NHIDDEN/NPOOLを使ったDBUFの場合 */
+    /***************************************************************************/
+    end_of_fc:;
+  }
+
+  if ((!MACROPIPE || NTHREAD==1 || eye_mode)
+    ||(CNN_DEPTH==1 && THREAD==2)
+    ||(CNN_DEPTH==3 && THREAD==6)
+    ||(CNN_DEPTH==4 && THREAD==8)
+    ||(CNN_DEPTH==6 && THREAD==12)
+      ) {
+    // copy result out
+    copy2D( oubatch, &(net->nout[FC_DEPTH-1]));
+  }
+}
+\end{verbatim}
+\end{screen}
+
+%%

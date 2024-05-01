@@ -1,0 +1,164 @@
+
+\chapter{IMAX3 Hardware}
+
+\section{Chiplet and Vector Length}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.85\textwidth]{fig01.eps}
+\caption{\label{fig:vl}Variation of Vector Length}
+\end{figure}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.32\textwidth]{fig02.eps}
+\includegraphics[angle=270,origin=b,width=0.32\textwidth]{fig03.eps}
+\includegraphics[angle=270,origin=b,width=0.32\textwidth]{fig04.eps}
+\caption{\label{fig:comp}Multicore system, GPGPU and CGRA}
+\end{figure}
+
+チップレット化には，チップ間データ転送オーバヘッドを最小化するために，十分な
+ベクトル長が必要である．そして，IMAX3は，チップレット指向アーキテクチャであ
+る．図\ref{fig:vl}は，ハードウェア構成とベクトル長の関係である．32要素程度の
+SIMDは，スカラプロセッサに搭載できる．256要素以上のSIMDは，ベクトルと呼ばれ
+る．このうち，ベクトル1は，キャッシュメモリに接続されている．ベクトル2は，メ
+インメモリに直結することで，ベクトル長を2048程度まで拡張できる．そして，CGRA
+は，ALUと，64KBのキャッシュメモリのサンドイッチ構造にすることで，ベクトル長
+を16K程度まで拡張できる．不規則なアクセスパターンをキャッシュメモリにカプセ
+ル化することで、メインメモリは規則的なアクセスパターンによる高速動作を維持で
+きる．
+
+図\ref{fig:comp}に，典型的な実行モデルを示す．1台の車が，1つのCPUであると
+仮定する．青色のデータが入力画像，緑色のデータが重みとする．すべてのCPUは，
+たとえ同じデータであっても，キャッシュ メモリに不足しているデータを取得しよ
+うとする．しかし，データがいつ到着するかを予測することはできない．GPGPUも多
+くのコアを搭載している．そして，車両は，出発前に可能な限り整列して待機する．
+出発と到着を統合することで，渋滞を緩和することができる． ただし，目的地が分
+散している場合，対処は困難である．統合できるかどうかは，プログラミングスキル
+に依存する．そして，右側がIMAXである．上部に，いくつかのCPUがある．数多くの
+キャッシュメモリは，自らデータを取得しに行くことはなく，CPUから提供されるデー
+タを待つ．CPUは緑色の重量データを一度に送信でき，データ通信量と消費エネルギー
+を削減できる．
+
+\section{Independent network for memory and execution}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig05.eps}
+\caption{\label{fig:mesh}Execution network and Memory network}
+\end{figure}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig06.eps}
+\caption{\label{fig:ring}IMAX2 multichip structure}
+\end{figure}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig30.eps}
+\caption{\label{fig:loopctrl}Burst execution of triple loops}
+\end{figure}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig33.eps}
+\caption{\label{fig:multilane}IMAX3 multilane structure}
+\end{figure}
+
+図\ref{fig:mesh}に示すように，IMAX2には2種類のネットワークがある．8個のユニッ
+トをグループ化し，メモリインターフェイスに並列接続することにより，レイテンシ
+を短縮している．演算には，各チップ内で64個のユニットがリング状に接続され，ダ
+イヤル錠のように，演算とローカルメモリの組合せを変更できる．リング構造はステ
+ンシル計算に役立つ．マッピングされた操作をスライドさせることで，ALUとキャッ
+シュメモリのペアを変更でき，キャッシュメモリ内のデータの多くが再利用できる．
+また，図\ref{fig:ring}に示すように，起動オーバーヘッドを削減するために，トリ
+プルループをIMAX2に一度にマッピングできる．最外ループは複数チップにマッピン
+グされ，内側の２重ループは各チップにマッピングされる．図\ref{fig:loopctrl}は，
+トリプルループ制御を4つの論理ユニット(1つの物理ユニット)が実行する仕組みであ
+る．そして，IMAX3は，図\ref{fig:multilane}に示すように，IMAX2を複数レーン接
+続したものである．
+
+\section{Multilevel pipelining}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig07.eps}
+\caption{\label{fig:micro}Micro pipelining}
+\end{figure}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig08.eps}
+\caption{\label{fig:medium}Medium pipelining}
+\end{figure}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig09.eps}
+\caption{\label{fig:macro}Macro pipelining}
+\end{figure}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig10.eps}
+\caption{\label{fig:all}Multilevel pipelining}
+\end{figure}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig11.eps}
+\caption{\label{fig:map}Mapping of application kernels}
+\end{figure}
+
+図\ref{fig:micro}は，LPDDR5に接続された複数レーンのIMAX2と，各レーンのマイクロ
+パイプライン動作を示している．マイクロパイプラインは，CGRAの基本モードである．
+各レーンには複数のIMAX2チップをカスケード接続できる．このモードは，従来の逐
+次プログラムに適用でき，コンパイルも高速である．次に，Figure\ref{fig:medium}
+は，複数レーンのIMAX2と，各レーンのミディアムパイプライン動作をを示している．
+ミディアムパイプラインは，各レーンにおいて，キャッシュメモリのダブルバッファ
+リングにより実装されており，ソート，ハッシュ関数，および，FFTなど，ステージ
+間の分離が必要な処理に対応することができる．Figure\ref{fig:macro}は，IMAX3の
+マクロ パイプラインを示す．複数レーンは，LPDDR5を介して１つの長大なパイプライ
+ンとして連結される．各レーンには，マイクロおよびミディアムパイプラインが含ま
+れる．Figure\ref{fig:all}は，IMAX3の最終形態を示している．各レーンに複数の
+IMAX2チップが搭載されている．図\ref{fig:map}のように，多数のレーンとCPUを投
+入して，多くの種類のカーネルを同時にマッピングすることができる．
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig12.eps}
+\caption{\label{fig:chip}Area estimation}
+\end{figure}
+
+\clearpage
+
+\section{Prototype}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig13.eps}
+\caption{\label{fig:proto}Prototype of IMAX3}
+\end{figure}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig14.eps}
+\caption{\label{fig:evmodel}Evaluation models}
+\end{figure}
+
+図\ref{fig:chip}に示すように，IMAX3の75\%の面積はキャッシュメモリである．
+LPDDR5の各ポートに，64ユニット構成のIMAX2を4基カスケード接続した場合，10240オ
+ペレーションを一度にマッピングできる．LPDDR5において30ポートが使用可能な場合，
+307,200オペレーションをマッピングできる．8nm技術で製造した場合，144mm平方に，
+IMAX2を120基搭載できる．Figure\ref{fig:proto}は，IMAX2をIMAX3にスケールアッ
+プする進行中のプロジェクトである．VPK180には，64ユニット構成のIMAX2を2基搭載
+でき，NoCを介して合計8基のIMAX2を接続できる．図\ref{fig:evmodel}は，プロトタ
+イプを用いた性能評価モデルである．実装されるのは，IMAX2\#0.0，IMAX2\#1.0，…，
+IMAX2\#7.0の8基である．各IMAX2は，IMAX2アプリケーションプログラムでは，
+NLANE=8,NCHIP=1の構成に対応する．一方，IMAX2アプリケーションプログラムにおい
+て，NLANE=8,NCHIP=6と記述して走行させることも可能である．この走行方法は，カ
+スケード構成のIMAX2を複数レーン装備する構成に対応する．ただし，実装されてい
+るのは先頭のIMAX2\#*.0のみであるため，カスケード接続される後続IMAXの実行結果
+は0となり，また，カスケード接続に伴うオーバヘッドも測定されない．実行速度は，
+あくまで理想値である．

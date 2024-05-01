@@ -1,0 +1,118 @@
+
+\chapter{IMAX3 Software}
+
+\section{IMAX3 interface mapped on CPU memory space}
+
+IMAX3は，大容量外部メモリに，IMAX2を複数レーン接続した構成であり，制御のため
+のハードソフトインタフェースは，IMAX2ごとの制御インタフェースの集合である．
+
+\section{Dataflow example}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig35.eps}
+\caption{\label{fig:4dconv}Tycal series of 4D-array convolution}
+\end{figure}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig36.eps}
+\caption{\label{fig:4dmap}Typical mappting of convolution}
+\end{figure}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig37.eps}
+\caption{\label{fig:options}Several options to speedup convolution}
+\end{figure}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig31.eps}
+\caption{\label{fig:twoaxis}Selecting two axis from 4D array}
+\end{figure}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.80\textwidth]{fig32.eps}
+\caption{\label{fig:optimal}Two options to increase the length of the burst execution}
+\end{figure}
+ 
+図\ref{fig:4dconv}に，典型的な畳み込み演算を示す．入力データ(I)の一部と，対
+応するカーネル(K)の乗算を行い，総和を求める．6x6の2次元I0が，奥行方向に重なっ
+ているのは，6x6の画像が1つのバッチに複数枚含まれることに対応する．I1も同様の
+構造をしており，例えば，I0が青の成分，I1が緑の成分に対応する．入力データとカー
+ネルの組が多数あり，縦方向の総和が出力O0となる．入力データが2次元であり，カー
+ネルKをX方向とY方向にずらして計算を繰り返すため，出力O0も2次元である．また，
+入力データ(I)はそのまま，カーネル(K)のみを差し替え，同様の計算をすると，別の
+出力O1が求まる．すなわち，入力データ(I)，カーネル(K)，出力データ(O)は，いず
+れも4次元配列である．さらに，多層畳み込み演算では，出力データ(O)を次の入力デー
+タ(I)として，同様の計算を繰り返す．
+
+以上の畳み込み演算をIMAX3により実行する方法は，いくつかある．図
+\ref{fig:4dmap}は，2次元畳み込みの基本形である．IMAXの各ユニットには，ホスト
+のドライバが制御するキャッシュメモリと演算器が入っている．主記憶の青色入力デー
+タは，キャッシュメモリの青い部分にブロードキャストされ，主記憶の黄色のカーネ
+ルは，黄色の部分にブロードキャストされる．ユニット0番は，カーネルの左上に対
+応するデータを取り出し，ユニット1番に送る．ユニット1番は，乗算を行い，結果を
+ユニット2番に送る．以上を繋ぎ，最後に，ユニット10番が9個の乗算結果の総和を赤
+色出力に足し込み，3x3の畳み込み演算を1つ完了する．全てのユニットが入力データ
+を右にシフトしながら次々と計算し，出力データが連続して更新される．以上が，典
+型的な，CGRAの計算方法である．
+
+IMAXの特徴は，以上の基本形を4次元配列の大きさに合わせて組み合わせる自由度の
+多さにある(図\ref{fig:options})．最適化の目標は，実行時間を短縮することであ
+り，手段は，ブロードキャストと，キャッシュメモリの最大限再利用である．IMAX2
+の1チップは，2重ループを一度に連続実行でき，4組の畳み込み演算を論理的な4列構
+造に写像できる．残るは，4次元データのどの軸を2重ループに写像するかである．入
+力Iのどの軸を選ぶかを決めると，他は自動的に決まるため，まず，青色入力データ
+(I)の軸を選ぶ．候補は，図\ref{fig:twoaxis}に示す，X軸，Y軸，バッチ軸，チャネ
+ル軸の4つである．ただし，X軸は，アドレスが連続するため，必ず選ぶべきである．
+同様に，チャネル軸は，64ユニットを埋めるために利用すれば効率が良いため，残る
+軸は，Y軸またはバッチ軸の2択となる．
+
+図\ref{fig:optimal}に，2つの写像方法を示す．X軸とY軸を使う場合，黄色のデータ
+は，連続アドレスであるため，並べ替えが不要である．Xの長さとYの長さを乗じた1
+枚のデータサイズが，ユニット内のキャッシュメモリに入る場合，最も効率が良い．
+例えば，キャッシュメモリが16Kword分あれば，128x128まで収容できる．256x256の
+場合も，この形のまま，Y方向に４分割して実行すればよい．一方，多層畳み込みの
+後方では，2x2等の小さな正方形になるため，IMAXの連続実行時間が短くなり，起動
+オーバヘッドが大きくなる．このような場合，Y軸の代わりにバッチ軸を使う．並べ
+替えに伴うオーバヘッドは増加するが，バッチ数が100の場合，2x100となり，データ
+サイズを大きくでき，起動オーバヘッドを削減できる．3次元畳み込みの場合も，同
+様に，IMAXの連続動作時間を長くし，起動回数を減らせばよい．
+
+\section{Programming model of Macro pipelining}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=0,origin=b,width=0.85\textwidth]{macro-pipe.eps}
+\caption{\label{fig:model0}Programming model}
+\end{figure}
+
+図\ref{fig:model0}は，マクロパイプライニングに関する，プログラミングモデルで
+ある．(a)は，処理時間の長い区間が3つあり，3つのスレッドを起動して，各々を
+IMAXにより高速化するマクロパイプライニングである．各スレッドの入力と出力が干
+渉しないよう，スレッド間のデータ構造にダブルバッファが必要となる．一方，(b)
+は，処理時間の長い区間をIMAXにより実行するものの，処理間に，配列添字の入れ替
+え等，ホストによる短時間処理が介在するケースである．短時間処理をダブルバッファ
+として利用することにより，全てのスレッド間にダブルバッファを適用する場合に比
+べ，メモリ使用量を抑制できる．
+
+\section{Programming style of Macro pipelining}
+
+\begin{figure}[htbp]
+\center
+\includegraphics[angle=270,origin=b,width=0.85\textwidth]{fig15.eps}
+\caption{\label{fig:model1}Programming stype}
+\end{figure}
+
+図\ref{fig:model1}は，プログラミングスタイルである．マクロパイプライニングに
+は，複数のスレッドを起動し，ループ構造を内包する関数(th\_inference)を同時に
+実行開始する．th\_inference()は，多層CNNをシミュレートするnn\_forward()を繰
+り返し実行する．nn\_forward()は，複数スレッドにより同時に実行されるものの，
+各スレッドは，担当箇所のみを実行し，前段層と後段層の処理完了との待ち合わせを
+行いつつ，パイプライン処理を行う．各層のうち，LANEを引数とする関数呼び出しが，
+IMAX2を使用する．マクロパイプライニングには，HOSTとIMAX2が各々複数参加してい
+る，Busy loopではなく，sigwait()を使うことにより，HOSTのコア数が十分にない場
+合にも，スレッド間の待ち合わせがHOSTの能力を超えない仕組みとしている．
